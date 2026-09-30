@@ -3,22 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-  <title>Por Mi Carreta · Acceso</title>
+  <title>Por Mi Carreta · Validador</title>
   <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
   <style>
-    :root{
-      --paper:#f7f3ea; --ink:#111; --ok:#14853c; --bad:#bd241e; --muted:#dedede;
-    }
+    :root{--paper:#f7f3ea;--ink:#111;--ok:#14853c;--bad:#bd241e;--muted:#dedede}
     *{box-sizing:border-box}
     body{margin:0;background:var(--paper);font-family:Arial,Helvetica,sans-serif;color:var(--ink)}
     .wrap{max-width:680px;margin:0 auto;padding:18px}
     h1{font-size:28px;margin:6px 0 18px}
     .gate{display:flex;gap:10px;margin-bottom:14px}
-    .gate button,.scan,.manual button{
-      border:0;border-radius:12px;padding:15px;font-size:18px;font-weight:800
-    }
+    .gate button,.scan,.manual button{border:0;border-radius:12px;padding:15px;font-size:18px;font-weight:800}
     .gate button{flex:1;background:var(--muted)}
-    .gate button.active{background:white;outline:4px solid #222}
+    .gate button.active{background:#fff;outline:4px solid #222}
     .scan{width:100%;background:#111;color:#fff;margin:8px 0 14px}
     #reader{background:#fff;border-radius:14px;overflow:hidden}
     .result{display:none;margin-top:16px;padding:24px;border-radius:16px;text-align:center}
@@ -28,11 +24,10 @@
     .ticket{font-size:30px;font-weight:900}
     .meta{font-size:16px;margin-top:8px;line-height:1.4}
     .manual{margin-top:20px;border-top:1px solid #bbb;padding-top:16px}
-    .manual input{width:100%;padding:14px;font-size:20px;border:2px solid #aaa;border-radius:10px;text-transform:uppercase}
+    .manual input,.pin input{width:100%;padding:14px;font-size:20px;border:2px solid #aaa;border-radius:10px}
+    .manual input{text-transform:uppercase}
     .manual button{width:100%;background:#5d5d5d;color:#fff;margin-top:10px}
-    .row{display:flex;gap:10px}
     .pin{margin-bottom:14px}
-    .pin input{width:100%;padding:14px;font-size:20px;border:2px solid #aaa;border-radius:10px}
     .hint{font-size:13px;color:#555;margin-top:8px}
   </style>
 </head>
@@ -42,7 +37,7 @@
 
   <div class="pin">
     <strong>PIN de acceso:</strong>
-    <input id="pin" inputmode="numeric" autocomplete="off" placeholder="Introduce el PIN">
+    <input id="pin" inputmode="numeric" autocomplete="off" value="311026">
   </div>
 
   <div class="gate">
@@ -65,32 +60,26 @@
     <button onclick="validateManual()">VALIDAR MANUALMENTE</button>
     <div class="hint">El número manual es solo para incidencias.</div>
   </div>
-
-  <iframe id="backendFrame" style="display:none"></iframe>
 </div>
 
 <script>
-// PEGA AQUÍ la URL completa de tu aplicación web de Apps Script,
-// la que termina normalmente en /exec
 const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbztb74K4Kc1cUSra7vL0-XJ_AAo6fbfzqH8kQKzj8SUUNdJ69phd7BToOLk20rWOBhaEw/exec';
 
 let gate = 'PUERTA A';
 let scanner = null;
 let busy = false;
+let pendingScript = null;
+let timeoutId = null;
 
 function setGate(name){
   gate = name;
-  gateA.classList.toggle('active',name==='PUERTA A');
-  gateB.classList.toggle('active',name==='PUERTA B');
+  document.getElementById('gateA').classList.toggle('active',name==='PUERTA A');
+  document.getElementById('gateB').classList.toggle('active',name==='PUERTA B');
 }
 
 function startScanner(){
   const pin = document.getElementById('pin').value.trim();
-  if(!pin){
-    showLocalError('INTRODUCE EL PIN DE ACCESO');
-    return;
-  }
-
+  if(!pin){ showLocalError('INTRODUCE EL PIN DE ACCESO'); return; }
   if(scanner) return;
 
   scanner = new Html5Qrcode('reader');
@@ -101,83 +90,105 @@ function startScanner(){
     decodedText => {
       if(busy) return;
       busy = true;
-      try{ scanner.pause(true); }catch(e){}
+      try{scanner.pause(true)}catch(e){}
       validate(decodedText);
     },
     () => {}
-  ).catch(err => {
+  ).catch(() => {
     showLocalError('NO SE HA PODIDO ABRIR LA CÁMARA');
     scanner = null;
   });
 }
 
 function validateManual(){
-  const value = document.getElementById('manualInput').value.trim();
+  const value=document.getElementById('manualInput').value.trim();
   if(!value) return;
+  busy=true;
   validate(value);
 }
 
 function validate(value){
-  const pin = document.getElementById('pin').value.trim();
-  if(!pin){
-    showLocalError('INTRODUCE EL PIN DE ACCESO');
-    return;
-  }
+  const pin=document.getElementById('pin').value.trim();
 
+  if(!pin){ finishWithError('INTRODUCE EL PIN DE ACCESO'); return; }
   if(!BACKEND_URL.startsWith('https://script.google.com/')){
-    showLocalError('FALTA CONFIGURAR LA URL DEL VALIDADOR');
+    finishWithError('FALTA CONFIGURAR LA URL DEL VALIDADOR');
     return;
   }
 
-  const url = BACKEND_URL
-    + '?mode=validate'
-    + '&token=' + encodeURIComponent(value)
-    + '&gate=' + encodeURIComponent(gate)
-    + '&pin=' + encodeURIComponent(pin)
-    + '&t=' + Date.now();
+  cleanupRequest();
 
-  document.getElementById('backendFrame').src = url;
+  const cb='pmcValidationCallback';
+  const url=BACKEND_URL
+    +'?mode=validate'
+    +'&token='+encodeURIComponent(value)
+    +'&gate='+encodeURIComponent(gate)
+    +'&pin='+encodeURIComponent(pin)
+    +'&callback='+cb
+    +'&t='+Date.now();
+
+  pendingScript=document.createElement('script');
+  pendingScript.src=url;
+  pendingScript.async=true;
+  pendingScript.onerror=()=>finishWithError('NO SE HA PODIDO CONECTAR CON LA BASE DE DATOS');
+  document.body.appendChild(pendingScript);
+
+  timeoutId=setTimeout(()=>{
+    finishWithError('LA VALIDACIÓN HA TARDADO DEMASIADO. PRUEBA DE NUEVO');
+  },10000);
 }
 
-window.addEventListener('message', event => {
-  const data = event.data;
-  if(!data || data.type !== 'PMC_VALIDATION_RESULT') return;
+window.pmcValidationCallback=function(res){
+  cleanupRequest();
+  showResult(res || {ok:false,status:'ERROR',message:'ERROR'});
+  setTimeout(resumeScanner,1200);
+};
 
-  showResult(data.result || {ok:false,status:'ERROR',message:'ERROR'});
+function cleanupRequest(){
+  if(timeoutId){clearTimeout(timeoutId);timeoutId=null}
+  if(pendingScript){
+    try{pendingScript.remove()}catch(e){}
+    pendingScript=null;
+  }
+}
 
-  setTimeout(() => {
-    busy = false;
-    if(scanner){
-      try{ scanner.resume(); }catch(e){}
-    }
-  }, 1200);
-});
+function resumeScanner(){
+  busy=false;
+  if(scanner){
+    try{scanner.resume()}catch(e){}
+  }
+}
+
+function finishWithError(text){
+  cleanupRequest();
+  showLocalError(text);
+  setTimeout(resumeScanner,1200);
+}
 
 function showResult(res){
-  const box = document.getElementById('result');
-  box.className = 'result ' + (res.ok ? 'ok' : 'bad');
+  const box=document.getElementById('result');
+  box.className='result '+(res.ok?'ok':'bad');
 
-  let title = res.message || 'ERROR';
-  if(res.status === 'VALIDA') title = '✅ ENTRADA VÁLIDA';
-  if(res.status === 'USADA') title = '❌ YA UTILIZADA';
-  if(res.status === 'INVALIDA') title = '❌ NO VÁLIDA';
-  if(res.status === 'PIN') title = '❌ PIN INCORRECTO';
+  let title=res.message||'ERROR';
+  if(res.status==='VALIDA') title='✅ ENTRADA VÁLIDA';
+  if(res.status==='USADA') title='❌ YA UTILIZADA';
+  if(res.status==='INVALIDA') title='❌ NO VÁLIDA';
+  if(res.status==='PIN') title='❌ PIN INCORRECTO';
 
-  statusText.textContent = title;
-  ticketText.textContent = res.ticket || '';
+  document.getElementById('statusText').textContent=title;
+  document.getElementById('ticketText').textContent=res.ticket||'';
 
-  let meta = '';
-  if(res.status === 'VALIDA'){
-    meta = `${res.gate || gate} · ${res.validatedAt || ''}`;
-  }else if(res.status === 'USADA'){
-    meta = `Validada: ${res.validatedAt || 'sin hora'}${res.gate ? ' · ' + res.gate : ''}`;
+  let meta='';
+  if(res.status==='VALIDA'){
+    meta=`${res.gate||gate} · ${res.validatedAt||''}`;
+  }else if(res.status==='USADA'){
+    meta=`Validada: ${res.validatedAt||'sin hora'}${res.gate?' · '+res.gate:''}`;
   }
-
-  metaText.textContent = meta;
+  document.getElementById('metaText').textContent=meta;
 }
 
 function showLocalError(text){
-  showResult({ok:false,status:'ERROR',message:'❌ ' + text});
+  showResult({ok:false,status:'ERROR',message:'❌ '+text});
 }
 </script>
 </body>
