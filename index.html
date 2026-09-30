@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Por Mi Carreta · Acceso</title>
+  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+  <style>
+    :root{
+      --paper:#f7f3ea; --ink:#111; --ok:#14853c; --bad:#bd241e; --muted:#dedede;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--paper);font-family:Arial,Helvetica,sans-serif;color:var(--ink)}
+    .wrap{max-width:680px;margin:0 auto;padding:18px}
+    h1{font-size:28px;margin:6px 0 18px}
+    .gate{display:flex;gap:10px;margin-bottom:14px}
+    .gate button,.scan,.manual button{
+      border:0;border-radius:12px;padding:15px;font-size:18px;font-weight:800
+    }
+    .gate button{flex:1;background:var(--muted)}
+    .gate button.active{background:white;outline:4px solid #222}
+    .scan{width:100%;background:#111;color:#fff;margin:8px 0 14px}
+    #reader{background:#fff;border-radius:14px;overflow:hidden}
+    .result{display:none;margin-top:16px;padding:24px;border-radius:16px;text-align:center}
+    .result.ok{display:block;background:#e8f6ec;border:3px solid var(--ok)}
+    .result.bad{display:block;background:#fdebea;border:3px solid var(--bad)}
+    .result h2{font-size:34px;margin:0 0 8px}
+    .ticket{font-size:30px;font-weight:900}
+    .meta{font-size:16px;margin-top:8px;line-height:1.4}
+    .manual{margin-top:20px;border-top:1px solid #bbb;padding-top:16px}
+    .manual input{width:100%;padding:14px;font-size:20px;border:2px solid #aaa;border-radius:10px;text-transform:uppercase}
+    .manual button{width:100%;background:#5d5d5d;color:#fff;margin-top:10px}
+    .row{display:flex;gap:10px}
+    .pin{margin-bottom:14px}
+    .pin input{width:100%;padding:14px;font-size:20px;border:2px solid #aaa;border-radius:10px}
+    .hint{font-size:13px;color:#555;margin-top:8px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>POR MI CARRETA · Validador</h1>
+
+  <div class="pin">
+    <strong>PIN de acceso:</strong>
+    <input id="pin" inputmode="numeric" autocomplete="off" placeholder="Introduce el PIN">
+  </div>
+
+  <div class="gate">
+    <button id="gateA" class="active" onclick="setGate('PUERTA A')">PUERTA A</button>
+    <button id="gateB" onclick="setGate('PUERTA B')">PUERTA B</button>
+  </div>
+
+  <button class="scan" onclick="startScanner()">ESCANEAR ENTRADA</button>
+  <div id="reader"></div>
+
+  <div id="result" class="result">
+    <h2 id="statusText"></h2>
+    <div id="ticketText" class="ticket"></div>
+    <div id="metaText" class="meta"></div>
+  </div>
+
+  <div class="manual">
+    <strong>Si el QR no se lee:</strong>
+    <input id="manualInput" placeholder="Ej. PMC-0367">
+    <button onclick="validateManual()">VALIDAR MANUALMENTE</button>
+    <div class="hint">El número manual es solo para incidencias.</div>
+  </div>
+
+  <iframe id="backendFrame" style="display:none"></iframe>
+</div>
+
+<script>
+// PEGA AQUÍ la URL completa de tu aplicación web de Apps Script,
+// la que termina normalmente en /exec
+const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbztb74K4Kc1cUSra7vL0-XJ_AAo6fbfzqH8kQKzj8SUUNdJ69phd7BToOLk20rWOBhaEw/exec';
+
+let gate = 'PUERTA A';
+let scanner = null;
+let busy = false;
+
+function setGate(name){
+  gate = name;
+  gateA.classList.toggle('active',name==='PUERTA A');
+  gateB.classList.toggle('active',name==='PUERTA B');
+}
+
+function startScanner(){
+  const pin = document.getElementById('pin').value.trim();
+  if(!pin){
+    showLocalError('INTRODUCE EL PIN DE ACCESO');
+    return;
+  }
+
+  if(scanner) return;
+
+  scanner = new Html5Qrcode('reader');
+
+  scanner.start(
+    {facingMode:'environment'},
+    {fps:12, qrbox:{width:250,height:250}},
+    decodedText => {
+      if(busy) return;
+      busy = true;
+      try{ scanner.pause(true); }catch(e){}
+      validate(decodedText);
+    },
+    () => {}
+  ).catch(err => {
+    showLocalError('NO SE HA PODIDO ABRIR LA CÁMARA');
+    scanner = null;
+  });
+}
+
+function validateManual(){
+  const value = document.getElementById('manualInput').value.trim();
+  if(!value) return;
+  validate(value);
+}
+
+function validate(value){
+  const pin = document.getElementById('pin').value.trim();
+  if(!pin){
+    showLocalError('INTRODUCE EL PIN DE ACCESO');
+    return;
+  }
+
+  if(!BACKEND_URL.startsWith('https://script.google.com/')){
+    showLocalError('FALTA CONFIGURAR LA URL DEL VALIDADOR');
+    return;
+  }
+
+  const url = BACKEND_URL
+    + '?mode=validate'
+    + '&token=' + encodeURIComponent(value)
+    + '&gate=' + encodeURIComponent(gate)
+    + '&pin=' + encodeURIComponent(pin)
+    + '&t=' + Date.now();
+
+  document.getElementById('backendFrame').src = url;
+}
+
+window.addEventListener('message', event => {
+  const data = event.data;
+  if(!data || data.type !== 'PMC_VALIDATION_RESULT') return;
+
+  showResult(data.result || {ok:false,status:'ERROR',message:'ERROR'});
+
+  setTimeout(() => {
+    busy = false;
+    if(scanner){
+      try{ scanner.resume(); }catch(e){}
+    }
+  }, 1200);
+});
+
+function showResult(res){
+  const box = document.getElementById('result');
+  box.className = 'result ' + (res.ok ? 'ok' : 'bad');
+
+  let title = res.message || 'ERROR';
+  if(res.status === 'VALIDA') title = '✅ ENTRADA VÁLIDA';
+  if(res.status === 'USADA') title = '❌ YA UTILIZADA';
+  if(res.status === 'INVALIDA') title = '❌ NO VÁLIDA';
+  if(res.status === 'PIN') title = '❌ PIN INCORRECTO';
+
+  statusText.textContent = title;
+  ticketText.textContent = res.ticket || '';
+
+  let meta = '';
+  if(res.status === 'VALIDA'){
+    meta = `${res.gate || gate} · ${res.validatedAt || ''}`;
+  }else if(res.status === 'USADA'){
+    meta = `Validada: ${res.validatedAt || 'sin hora'}${res.gate ? ' · ' + res.gate : ''}`;
+  }
+
+  metaText.textContent = meta;
+}
+
+function showLocalError(text){
+  showResult({ok:false,status:'ERROR',message:'❌ ' + text});
+}
+</script>
+</body>
+</html>
